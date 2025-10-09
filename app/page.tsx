@@ -1,14 +1,13 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect } from "react"
 import { Upload } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 
-type JobStatus = {
-  status: "processing" | "completed" | "failed"
+type JobStatusUI = {
+  status: "idle" | "processing" | "completed" | "failed"
   previewUrl?: string
   error?: string
 }
@@ -16,37 +15,50 @@ type JobStatus = {
 export default function Home() {
   const [file, setFile] = useState<File | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
-  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
+  const [jobStatus, setJobStatus] = useState<JobStatusUI>({ status: "idle" })
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Poll job status
+  // Poll job status every second until we have a preview (from S3)
   useEffect(() => {
-    if (!jobId || jobStatus?.status === "completed" || jobStatus?.status === "failed") {
-      return
-    }
+    if (!jobId) return
+    if (jobStatus.status === "completed" || jobStatus.status === "failed") return
 
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/job-status?jobId=${jobId}`)
         const data = await res.json()
-        setJobStatus(data)
+        // Our worker returns { status: "processing" | "ready", previewUrl?: string }
+        if (data.previewUrl) {
+          setJobStatus({ status: "completed", previewUrl: data.previewUrl })
+        } else if (data.status === "processing") {
+          setJobStatus({ status: "processing" })
+        } else if (data.error) {
+          setJobStatus({ status: "failed", error: data.error })
+          setError(data.error)
+        } else {
+          // keep polling
+          setJobStatus((s) => (s.status === "idle" ? { status: "processing" } : s))
+        }
       } catch (err) {
-        console.error("[v0] Error polling job status:", err)
+        console.error("[EasyDigitizer] poll error:", err)
+        setJobStatus({ status: "failed", error: "Could not get job status." })
       }
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [jobId, jobStatus?.status])
+  }, [jobId, jobStatus.status])
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
     if (!selectedFile) return
 
+    // reset UI
     setFile(selectedFile)
     setError(null)
     setIsUploading(true)
-    setJobStatus(null)
+    setJobStatus({ status: "processing" })
+    setJobId(null)
 
     try {
       const formData = new FormData()
@@ -56,37 +68,41 @@ export default function Home() {
         method: "POST",
         body: formData,
       })
-
-      if (!res.ok) {
-        throw new Error("Upload failed")
-      }
-
+      if (!res.ok) throw new Error(`Upload failed (${res.status})`)
       const data = await res.json()
+      if (!data?.jobId) throw new Error("No jobId returned")
       setJobId(data.jobId)
     } catch (err) {
+      console.error("[EasyDigitizer] upload error:", err)
       setError("Failed to upload file. Please try again.")
-      console.error("[v0] Upload error:", err)
+      setJobStatus({ status: "failed", error: "upload failed" })
     } finally {
       setIsUploading(false)
     }
   }
 
-  const handleCheckout = async (amount: number) => {
-    if (!jobId) return
-
+  // amount is in CENTS (Stripe expects cents). 99 => $0.99, 299 => $2.99
+  const handleCheckout = async (amountCents: number) => {
+    if (!jobId) {
+      setError("Please upload an image first.")
+      return
+    }
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId, amount }),
+        body: JSON.stringify({ jobId, amount: amountCents }),
       })
-
+      if (!res.ok) throw new Error(`Checkout error (${res.status})`)
       const data = await res.json()
-      if (data.url) {
+      if (data?.url) {
+        // This should redirect to STRIPE Checkout (credit card page)
         window.location.href = data.url
+      } else {
+        throw new Error("No checkout URL returned")
       }
     } catch (err) {
-      console.error("[v0] Checkout error:", err)
+      console.error("[EasyDigitizer] checkout error:", err)
       setError("Checkout failed. Please try again.")
     }
   }
@@ -117,7 +133,7 @@ export default function Home() {
             <div className="relative">
               <input
                 type="file"
-                accept=".png"
+                accept="image/png"
                 onChange={handleFileChange}
                 className="hidden"
                 id="file-upload"
@@ -134,20 +150,18 @@ export default function Home() {
             </div>
 
             {/* Status Messages */}
-            {isUploading && <div className="text-center text-sm text-muted-foreground">Uploading...</div>}
-
-            {jobStatus?.status === "processing" && (
-              <div className="text-center text-sm text-muted-foreground">Processing your design...</div>
+            {isUploading && <div className="text-center text-sm text-muted-foreground">Uploading…</div>}
+            {jobStatus.status === "processing" && (
+              <div className="text-center text-sm text-muted-foreground">Processing your design…</div>
             )}
-
             {error && <div className="text-center text-sm text-destructive">{error}</div>}
 
             {/* Preview Area */}
-            {jobStatus?.previewUrl && (
+            {jobStatus.previewUrl ? (
               <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="rounded-xl overflow-hidden border border-border bg-secondary/50">
                   <img
-                    src={jobStatus.previewUrl || "/placeholder.svg"}
+                    src={jobStatus.previewUrl}
                     alt="Stitch preview"
                     className="w-full h-auto"
                   />
@@ -156,19 +170,26 @@ export default function Home() {
                 {/* Purchase Buttons */}
                 <div className="grid grid-cols-2 gap-4">
                   <Button
-                    onClick={() => handleCheckout(0.99)}
+                    onClick={() => handleCheckout(99)} // $0.99
+                    disabled={!jobId}
                     className="w-full bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl h-12"
                   >
                     Buy $0.99
                   </Button>
                   <Button
-                    onClick={() => handleCheckout(2.99)}
+                    onClick={() => handleCheckout(299)} // $2.99
+                    disabled={!jobId}
                     className="w-full bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl h-12"
                   >
                     Buy $2.99
                   </Button>
                 </div>
               </div>
+            ) : (
+              // If no preview yet, show a gentle hint (don’t show the stock/template image)
+              jobId && jobStatus.status === "processing" ? (
+                <div className="text-center text-sm text-muted-foreground">Preparing preview…</div>
+              ) : null
             )}
           </div>
         </Card>
