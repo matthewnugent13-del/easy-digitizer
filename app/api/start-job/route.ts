@@ -1,24 +1,27 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 
-export async function POST(request: NextRequest) {
+export const dynamic = "force-dynamic"
+export const revalidate = 0
+
+export async function POST(req: NextRequest) {
   try {
-    const formData = await request.formData()
-    const file = formData.get("file") as File
+    const form = await req.formData()
+    const file = form.get("file") as File | null
+    if (!file) return NextResponse.json({ error: "file required" }, { status: 400 })
 
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 })
-    }
+    const fd = new FormData()
+    fd.append("file", file)
 
-    // Generate a unique job ID
-    const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    const worker = process.env.WORKER_URL!
+    if (!worker) return NextResponse.json({ error: "WORKER_URL missing" }, { status: 500 })
 
-    // TODO: Implement actual file processing logic
-    // For now, return a mock job ID
-    console.log("[v0] Started job:", jobId, "for file:", file.name)
+    // send the upload to your FastAPI worker
+    const r = await fetch(`${worker}/jobs`, { method: "POST", body: fd })
+    const j = await r.json()
 
-    return NextResponse.json({ jobId })
-  } catch (error) {
-    console.error("[v0] Error starting job:", error)
-    return NextResponse.json({ error: "Failed to start job" }, { status: 500 })
+    // Worker returns { jobId: "<uuid>" }
+    return NextResponse.json(j, { status: r.ok ? 200 : 500 })
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "start-job failed" }, { status: 500 })
   }
 }
