@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { Upload } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Upload, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 
@@ -19,10 +19,10 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const [colorCount, setColorCount] = useState<number>(6) // 1–8
-  const [progress, setProgress] = useState<number>(0)     // loading bar %
+  // 1–8 thread colors
+  const [colorCount, setColorCount] = useState<number>(6)
 
-  // local image preview URL
+  // Create/cleanup a local URL for the uploaded image
   useEffect(() => {
     if (!file) { setFileUrl(null); return }
     const url = URL.createObjectURL(file)
@@ -30,41 +30,37 @@ export default function Home() {
     return () => URL.revokeObjectURL(url)
   }, [file])
 
-  // Poll job status + gently advance progress when a job exists
+  // Poll job status until preview arrives
   useEffect(() => {
     if (!jobId) return
     if (jobStatus.status === "completed" || jobStatus.status === "failed") return
 
-    let pct = 25
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/job-status?jobId=${jobId}`)
+        const res = await fetch(`/api/job-status?jobId=${jobId}`, { cache: "no-store" })
         const data = await res.json()
         if (data.previewUrl) {
           setJobStatus({ status: "completed", previewUrl: data.previewUrl })
-          setProgress(100)
           clearInterval(interval)
         } else {
-          pct = Math.min(90, pct + 5)
-          setProgress(pct)
           setJobStatus({ status: "processing" })
         }
       } catch (err) {
         console.error(err)
+        setJobStatus({ status: "failed", error: "Could not fetch status" })
+        clearInterval(interval)
       }
     }, 1000)
 
     return () => clearInterval(interval)
   }, [jobId, jobStatus.status])
 
-  // 1) User selects a PNG — we only store it and show a thumbnail
+  // User picks a PNG → show thumbnail only (no server call yet)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0] || null
     setError(null)
     setJobId(null)
     setJobStatus({ status: "idle" })
-    setProgress(0)
-
     if (!selected) { setFile(null); return }
     if (selected.type !== "image/png") {
       setError("Please upload a PNG file.")
@@ -74,18 +70,18 @@ export default function Home() {
     setFile(selected)
   }
 
-  // 2) User clicks Generate — we send the PNG + chosen color count to the worker
+  // Click “Generate” → send PNG + slider value to server
   const handleGenerate = async () => {
     if (!file) { setError("Please upload a PNG first."); return }
     try {
       setIsUploading(true)
       setError(null)
       setJobStatus({ status: "processing" })
-      setProgress(10)
+      setJobId(null)
 
       const formData = new FormData()
       formData.append("file", file)
-      formData.append("colors", String(colorCount)) // 1–8 to the worker
+      formData.append("colors", String(colorCount))
 
       const res = await fetch("/api/start-job", { method: "POST", body: formData })
       if (!res.ok) {
@@ -95,7 +91,6 @@ export default function Home() {
       const data = await res.json()
       if (!data?.jobId) throw new Error("No jobId returned")
       setJobId(data.jobId)
-      setProgress(25)
     } catch (err) {
       console.error(err)
       setError("Failed to generate stitches. Please try again.")
@@ -105,7 +100,7 @@ export default function Home() {
     }
   }
 
-  // amount is in cents (Stripe)
+  // amount is in cents for Stripe
   const handleCheckout = async (amountCents: number) => {
     if (!jobId) { setError("Please generate stitches first."); return }
     try {
@@ -123,22 +118,30 @@ export default function Home() {
     }
   }
 
+  const isLoading = isUploading || jobStatus.status === "processing"
+
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
+      {/* Header */}
       <header className="border-b border-border">
         <div className="container mx-auto px-4 py-6">
           <h1 className="text-2xl font-semibold tracking-tight">Easy Digitizer</h1>
         </div>
       </header>
 
+      {/* Main */}
       <main className="flex-1 flex flex-col items-center justify-center px-4 py-16">
+        {/* Hero */}
         <div className="text-center mb-12 max-w-2xl">
           <h2 className="text-4xl md:text-5xl font-bold mb-4 text-balance">
             Upload a PNG → Choose thread colors → Generate stitches → Download DST.
           </h2>
-          <p className="text-muted-foreground text-lg">Professional-quality stitch paths with a simple workflow.</p>
+          <p className="text-muted-foreground text-lg">
+            Professional-quality stitch paths with a simple workflow.
+          </p>
         </div>
 
+        {/* Card */}
         <Card className="w-full max-w-2xl bg-card border-border rounded-xl p-8 md:p-12">
           <div className="space-y-6">
 
@@ -164,7 +167,7 @@ export default function Home() {
               </label>
             </div>
 
-            {/* Show the uploaded image preview (thumbnail) */}
+            {/* Uploaded thumbnail */}
             {fileUrl && (
               <div className="rounded-xl overflow-hidden border border-border">
                 <img src={fileUrl} alt="Uploaded" className="w-full h-auto" />
@@ -188,24 +191,25 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Generate button */}
+            {/* Generate */}
             <div className="flex justify-end">
               <Button onClick={handleGenerate} disabled={!file || isUploading} className="h-10 rounded-xl">
                 Generate
               </Button>
             </div>
 
-            {/* Loading bar */}
-            {(isUploading || jobStatus.status === "processing") && (
-              <div className="w-full h-2 rounded bg-border overflow-hidden">
-                <div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+            {/* Spinner (replaces progress bar) */}
+            {isLoading && (
+              <div className="flex items-center justify-center gap-3 py-2 text-sm text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span>Generating stitches…</span>
               </div>
             )}
 
             {/* Errors */}
             {error && <div className="text-center text-sm text-destructive">{error}</div>}
 
-            {/* Stitch preview + Buy buttons (only after generation) */}
+            {/* Stitch preview + Buy buttons */}
             {jobStatus.previewUrl && (
               <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="rounded-xl overflow-hidden border border-border bg-secondary/50">
@@ -226,6 +230,7 @@ export default function Home() {
         </Card>
       </main>
 
+      {/* Footer */}
       <footer className="border-t border-border">
         <div className="container mx-auto px-4 py-6 text-center">
           <p className="text-sm text-muted-foreground">No subscriptions. Secure checkout with Stripe.</p>
