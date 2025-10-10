@@ -1,27 +1,43 @@
 import { NextRequest, NextResponse } from "next/server"
-import Stripe from "stripe"
 
 export async function POST(req: NextRequest) {
-  const { jobId, amount } = await req.json()
-  if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 })
+  try {
+    const { jobId, amount } = await req.json()
+    if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 })
 
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-06-20" })
-  const lineItem = {
-    price_data: {
-      currency: "usd",
-      unit_amount: Number(amount) || 99, // cents -> $0.99
-      product_data: { name: "DST Download" },
-    },
-    quantity: 1,
+    const amountCents = Number(amount) || 99
+    const secret = process.env.STRIPE_SECRET_KEY!
+    const baseUrl = process.env.BASE_URL!
+
+    const body = new URLSearchParams({
+      mode: "payment",
+      "success_url": `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      "cancel_url": `${baseUrl}`,
+      // line item (dynamic price)
+      "line_items[0][price_data][currency]": "usd",
+      "line_items[0][price_data][unit_amount]": String(amountCents),
+      "line_items[0][price_data][product_data][name]": "DST Download",
+      "line_items[0][quantity]": "1",
+      // metadata so we can look the job up after payment
+      "metadata[jobId]": jobId,
+    })
+
+    const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    })
+
+    const data = await res.json()
+    if (!res.ok) {
+      return NextResponse.json({ error: data?.error?.message || "Stripe error" }, { status: 500 })
+    }
+
+    return NextResponse.json({ url: data.url })
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "checkout failed" }, { status: 500 })
   }
-
-  const session = await stripe.checkout.sessions.create({
-    mode: "payment",
-    line_items: [lineItem as any],
-    success_url: `${process.env.BASE_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${process.env.BASE_URL}`,
-    metadata: { jobId },
-  })
-
-  return NextResponse.json({ url: session.url })
 }
