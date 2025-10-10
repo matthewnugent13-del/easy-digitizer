@@ -1,28 +1,27 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 
-export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams
-  const jobId = searchParams.get("jobId")
+export const dynamic = "force-dynamic" // don't cache
+export const revalidate = 0
 
-  if (!jobId) {
-    return NextResponse.json({ error: "No job ID provided" }, { status: 400 })
-  }
+export async function GET(req: NextRequest) {
+  const jobId = new URL(req.url).searchParams.get("jobId")
+  if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 })
 
-  // TODO: Implement actual job status checking
-  // For demo purposes, simulate processing then completion
-  const jobCreatedTime = Number.parseInt(jobId.split("_")[1])
-  const elapsedTime = Date.now() - jobCreatedTime
+  // Ask the worker
+  const r = await fetch(`${process.env.WORKER_URL}/jobs/${jobId}`, { cache: "no-store" })
+  const j = await r.json()
 
-  if (elapsedTime < 3000) {
-    // Processing for first 3 seconds
-    return NextResponse.json({
-      status: "processing",
-    })
-  } else {
-    // Completed after 3 seconds with mock preview
+  // Worker returns {status: "processing" | "ready", previewUrl?: "..."}
+  if (j?.previewUrl) {
     return NextResponse.json({
       status: "completed",
-      previewUrl: "/embroidery-stitch-pattern-preview.jpg",
+      previewUrl: j.previewUrl, // <-- real S3 signed URL
     })
   }
+  if (j?.status === "processing") {
+    return NextResponse.json({ status: "processing" })
+  }
+
+  // If worker returns anything odd, stay in processing
+  return NextResponse.json({ status: "processing" })
 }
