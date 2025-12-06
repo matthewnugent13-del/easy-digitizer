@@ -5,10 +5,14 @@ import { Upload, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 
+type ThreadColor = { r: number; g: number; b: number }
+
 type JobStatusUI = {
   status: "idle" | "processing" | "completed" | "failed"
   previewUrl?: string
   error?: string
+  palette?: ThreadColor[] | null
+  trimCount?: number | null
 }
 
 export default function Home() {
@@ -48,7 +52,7 @@ export default function Home() {
   const handleUploadLabelClick = (
     e: React.MouseEvent<HTMLLabelElement, MouseEvent>
   ) => {
-    e.preventDefault() // prevent default label → input click
+    e.preventDefault()
     handleUploadClick()
   }
 
@@ -63,7 +67,7 @@ export default function Home() {
     return () => URL.revokeObjectURL(url)
   }, [file])
 
-  // Poll job status until preview arrives
+  // Poll job status until preview (and metadata) arrives
   useEffect(() => {
     if (!jobId) return
     if (jobStatus.status === "completed" || jobStatus.status === "failed") return
@@ -72,11 +76,21 @@ export default function Home() {
       try {
         const res = await fetch(`/api/job-status?jobId=${jobId}`, { cache: "no-store" })
         const data = await res.json()
+
         if (data.previewUrl) {
-          setJobStatus({ status: "completed", previewUrl: data.previewUrl })
+          setJobStatus({
+            status: "completed",
+            previewUrl: data.previewUrl,
+            palette: data.palette ?? null,
+            trimCount:
+              typeof data.trimCount === "number" ? data.trimCount : data.trimCount ?? null,
+          })
           clearInterval(interval)
         } else {
-          setJobStatus({ status: "processing" })
+          setJobStatus((prev) => ({
+            ...prev,
+            status: "processing",
+          }))
         }
       } catch (err) {
         console.error(err)
@@ -236,12 +250,16 @@ export default function Home() {
 
             {/* Generate */}
             <div className="flex justify-end">
-              <Button onClick={handleGenerate} disabled={!file || isUploading} className="h-10 rounded-xl">
+              <Button
+                onClick={handleGenerate}
+                disabled={!file || isUploading}
+                className="h-10 rounded-xl"
+              >
                 Generate
               </Button>
             </div>
 
-            {/* Spinner (replaces progress bar) */}
+            {/* Spinner */}
             {isLoading && (
               <div className="flex items-center justify-center gap-3 py-2 text-sm text-muted-foreground">
                 <Loader2 className="h-5 w-5 animate-spin" />
@@ -252,18 +270,58 @@ export default function Home() {
             {/* Errors */}
             {error && <div className="text-center text-sm text-destructive">{error}</div>}
 
-            {/* Stitch preview + Buy buttons */}
+            {/* Stitch preview + metadata + Buy buttons */}
             {jobStatus.previewUrl && (
               <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="rounded-xl overflow-hidden border border-border bg-secondary/50">
-                  <img src={jobStatus.previewUrl} alt="Stitch preview" className="w-full h-auto" />
+                  <img
+                    src={jobStatus.previewUrl}
+                    alt="Stitch preview"
+                    className="w-full h-auto"
+                  />
                 </div>
 
+                {/* Thread color swatches */}
+                {jobStatus.palette && jobStatus.palette.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Thread colors</div>
+                    <div className="flex flex-wrap gap-2">
+                      {jobStatus.palette.map((c, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <div
+                            className="w-6 h-6 rounded-full border border-border"
+                            style={{ backgroundColor: `rgb(${c.r}, ${c.g}, ${c.b})` }}
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            #{idx + 1} ({c.r}, {c.g}, {c.b})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Trim count */}
+                {typeof jobStatus.trimCount === "number" && (
+                  <div className="text-sm text-muted-foreground">
+                    Estimated trims:{" "}
+                    <span className="font-medium">{jobStatus.trimCount}</span>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-4">
-                  <Button onClick={() => handleCheckout(99)} disabled={!jobId} className="h-12 rounded-xl">
+                  <Button
+                    onClick={() => handleCheckout(99)}
+                    disabled={!jobId}
+                    className="h-12 rounded-xl"
+                  >
                     Buy $0.99
                   </Button>
-                  <Button onClick={() => handleCheckout(299)} disabled={!jobId} className="h-12 rounded-xl">
+                  <Button
+                    onClick={() => handleCheckout(299)}
+                    disabled={!jobId}
+                    className="h-12 rounded-xl"
+                  >
                     Buy $2.99
                   </Button>
                 </div>
@@ -283,23 +341,26 @@ export default function Home() {
               <ul className="list-disc pl-5 space-y-1">
                 <li>
                   You have the legal right to use, reproduce, and embroider any image you upload.
-                  You won’t upload copyrighted or trademarked artwork you&apos;re not authorized to use.
+                  You won’t upload copyrighted or trademarked artwork you&apos;re not authorized to
+                  use.
                 </li>
                 <li>
-                  You fully indemnify and hold Easy Digitizer and its owners harmless from any claims,
-                  damages, or legal issues arising from your use of uploaded images or resulting embroidery files.
+                  You fully indemnify and hold Easy Digitizer and its owners harmless from any
+                  claims, damages, or legal issues arising from your use of uploaded images or
+                  resulting embroidery files.
                 </li>
                 <li>
-                  This is an experimental tool. We make no guarantees about how the file will stitch out
-                  on your specific machine, fabric, or materials.
+                  This is an experimental tool. We make no guarantees about how the file will stitch
+                  out on your specific machine, fabric, or materials.
                 </li>
                 <li>
-                  We are not responsible for any damage to embroidery machines, needles, garments, or materials
-                  resulting from using the files generated by this site.
+                  We are not responsible for any damage to embroidery machines, needles, garments,
+                  or materials resulting from using the files generated by this site.
                 </li>
               </ul>
               <p className="text-xs text-muted-foreground">
-                If you do not agree to these terms, please do not upload images or use the generated embroidery files.
+                If you do not agree to these terms, please do not upload images or use the generated
+                embroidery files.
               </p>
             </div>
 
