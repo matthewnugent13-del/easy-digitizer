@@ -1,19 +1,23 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Upload, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+
+type ThreadColor = { r: number; g: number; b: number }
 
 type JobStatusUI = {
   status: "idle" | "processing" | "completed" | "failed"
   previewUrl?: string
   error?: string
+  palette?: ThreadColor[] | null
+  trimCount?: number | null
 }
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null)
-  const [fileUrl, setFileUrl] = useState<string | null>(null) // local preview
+  const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<JobStatusUI>({ status: "idle" })
   const [isUploading, setIsUploading] = useState(false)
@@ -48,7 +52,7 @@ export default function Home() {
   const handleUploadLabelClick = (
     e: React.MouseEvent<HTMLLabelElement, MouseEvent>
   ) => {
-    e.preventDefault() // prevent default label → input click
+    e.preventDefault()
     handleUploadClick()
   }
 
@@ -63,23 +67,37 @@ export default function Home() {
     return () => URL.revokeObjectURL(url)
   }, [file])
 
-  // Poll job status until preview arrives
+  // Poll job status until preview (and metadata) arrives
   useEffect(() => {
     if (!jobId) return
     if (jobStatus.status === "completed" || jobStatus.status === "failed") return
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/job-status?jobId=${jobId}`, { cache: "no-store" })
+        const res = await fetch(`/api/job-status?jobId=${jobId}`, {
+          cache: "no-store",
+        })
         const data = await res.json()
+
         if (data.previewUrl) {
-          setJobStatus({ status: "completed", previewUrl: data.previewUrl })
+          setJobStatus({
+            status: "completed",
+            previewUrl: data.previewUrl,
+            palette: data.palette ?? null,
+            trimCount:
+              typeof data.trimCount === "number"
+                ? data.trimCount
+                : data.trimCount ?? null,
+          })
           clearInterval(interval)
         } else {
-          setJobStatus({ status: "processing" })
+          setJobStatus((prev) => ({
+            ...prev,
+            status: "processing",
+          }))
         }
       } catch (err) {
-        console.error(err)
+        console.error("Error polling job status:", err)
         setJobStatus({ status: "failed", error: "Could not fetch status" })
         clearInterval(interval)
       }
@@ -88,7 +106,7 @@ export default function Home() {
     return () => clearInterval(interval)
   }, [jobId, jobStatus.status])
 
-  // User picks a PNG → show thumbnail only (no server call yet)
+  // Just set the file on change; no server call yet
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0] || null
     setError(null)
@@ -106,7 +124,7 @@ export default function Home() {
     setFile(selected)
   }
 
-  // Click “Generate” → send PNG + slider value to server
+  // Click “Generate” → send PNG + slider value directly to the worker (Render)
   const handleGenerate = async () => {
     if (!file) {
       setError("Please upload a PNG first.")
@@ -122,16 +140,26 @@ export default function Home() {
       formData.append("file", file)
       formData.append("colors", String(colorCount))
 
-      const res = await fetch("/api/start-job", { method: "POST", body: formData })
+      // Talk directly to FastAPI worker, not through /api/start-job
+      const res = await fetch(
+        "https://easy-digitizer-worker.onrender.com/jobs",
+        {
+          method: "POST",
+          body: formData,
+        }
+      )
+
       if (!res.ok) {
         const t = await res.text()
         throw new Error(t || `Generate failed (${res.status})`)
       }
+
       const data = await res.json()
-      if (!data?.jobId) throw new Error("No jobId returned")
+      if (!data?.jobId) throw new Error("No jobId returned from worker")
+
       setJobId(data.jobId)
     } catch (err) {
-      console.error(err)
+      console.error("Generate error:", err)
       setError("Failed to generate stitches. Please try again.")
       setJobStatus({ status: "failed", error: "generate failed" })
     } finally {
@@ -155,7 +183,7 @@ export default function Home() {
       if (data?.url) window.location.href = data.url
       else setError(data?.error || "Checkout failed.")
     } catch (err) {
-      console.error(err)
+      console.error("Checkout error:", err)
       setError("Checkout failed. Please try again.")
     }
   }
@@ -167,7 +195,9 @@ export default function Home() {
       {/* Header */}
       <header className="border-b border-border">
         <div className="container mx-auto px-4 py-6">
-          <h1 className="text-2xl font-semibold tracking-tight">Easy Digitizer</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Easy Digitizer
+          </h1>
         </div>
       </header>
 
@@ -176,7 +206,8 @@ export default function Home() {
         {/* Hero */}
         <div className="text-center mb-12 max-w-2xl">
           <h2 className="text-4xl md:text-5xl font-bold mb-4 text-balance">
-            Upload a PNG → Choose thread colors → Generate stitches → Download DST.
+            Upload a PNG → Choose thread colors → Generate stitches → Download
+            DST.
           </h2>
           <p className="text-muted-foreground text-lg">
             Professional-quality stitch paths with a simple workflow.
@@ -206,7 +237,9 @@ export default function Home() {
                 <span className="text-sm text-muted-foreground mb-1">
                   {file ? file.name : "Click to upload PNG"}
                 </span>
-                <span className="text-xs text-muted-foreground">PNG files only</span>
+                <span className="text-xs text-muted-foreground">
+                  PNG files only
+                </span>
               </label>
             </div>
 
@@ -236,12 +269,16 @@ export default function Home() {
 
             {/* Generate */}
             <div className="flex justify-end">
-              <Button onClick={handleGenerate} disabled={!file || isUploading} className="h-10 rounded-xl">
+              <Button
+                onClick={handleGenerate}
+                disabled={!file || isUploading}
+                className="h-10 rounded-xl"
+              >
                 Generate
               </Button>
             </div>
 
-            {/* Spinner (replaces progress bar) */}
+            {/* Spinner */}
             {isLoading && (
               <div className="flex items-center justify-center gap-3 py-2 text-sm text-muted-foreground">
                 <Loader2 className="h-5 w-5 animate-spin" />
@@ -250,20 +287,66 @@ export default function Home() {
             )}
 
             {/* Errors */}
-            {error && <div className="text-center text-sm text-destructive">{error}</div>}
+            {error && (
+              <div className="text-center text-sm text-destructive">{error}</div>
+            )}
 
-            {/* Stitch preview + Buy buttons */}
+            {/* Stitch preview + metadata + Buy buttons */}
             {jobStatus.previewUrl && (
               <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="rounded-xl overflow-hidden border border-border bg-secondary/50">
-                  <img src={jobStatus.previewUrl} alt="Stitch preview" className="w-full h-auto" />
+                  <img
+                    src={jobStatus.previewUrl}
+                    alt="Stitch preview"
+                    className="w-full h-auto"
+                  />
                 </div>
 
+                {/* Thread color swatches */}
+                {jobStatus.palette && jobStatus.palette.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Thread colors</div>
+                    <div className="flex flex-wrap gap-2">
+                      {jobStatus.palette.map((c, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <div
+                            className="w-6 h-6 rounded-full border border-border"
+                            style={{
+                              backgroundColor: `rgb(${c.r}, ${c.g}, ${c.b})`,
+                            }}
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            #{idx + 1} ({c.r}, {c.g}, {c.b})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Trim count */}
+                {typeof jobStatus.trimCount === "number" && (
+                  <div className="text-sm text-muted-foreground">
+                    Estimated trims:{" "}
+                    <span className="font-medium">
+                      {jobStatus.trimCount}
+                    </span>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-4">
-                  <Button onClick={() => handleCheckout(99)} disabled={!jobId} className="h-12 rounded-xl">
+                  <Button
+                    onClick={() => handleCheckout(99)}
+                    disabled={!jobId}
+                    className="h-12 rounded-xl"
+                  >
                     Buy $0.99
                   </Button>
-                  <Button onClick={() => handleCheckout(299)} disabled={!jobId} className="h-12 rounded-xl">
+                  <Button
+                    onClick={() => handleCheckout(299)}
+                    disabled={!jobId}
+                    className="h-12 rounded-xl"
+                  >
                     Buy $2.99
                   </Button>
                 </div>
@@ -277,29 +360,37 @@ export default function Home() {
       {showDisclaimer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="max-w-lg w-full mx-4 rounded-xl bg-background p-6 shadow-lg border border-border">
-            <h2 className="mb-2 text-lg font-semibold">Before you upload an image</h2>
+            <h2 className="mb-2 text-lg font-semibold">
+              Before you upload an image
+            </h2>
             <div className="mb-4 space-y-2 text-sm text-muted-foreground max-h-64 overflow-y-auto">
               <p>By using Easy Digitizer, you agree that:</p>
               <ul className="list-disc pl-5 space-y-1">
                 <li>
-                  You have the legal right to use, reproduce, and embroider any image you upload.
-                  You won’t upload copyrighted or trademarked artwork you&apos;re not authorized to use.
+                  You have the legal right to use, reproduce, and embroider any
+                  image you upload. You won’t upload copyrighted or trademarked
+                  artwork you&apos;re not authorized to use.
                 </li>
                 <li>
-                  You fully indemnify and hold Easy Digitizer and its owners harmless from any claims,
-                  damages, or legal issues arising from your use of uploaded images or resulting embroidery files.
+                  You fully indemnify and hold Easy Digitizer and its owners
+                  harmless from any claims, damages, or legal issues arising
+                  from your use of uploaded images or resulting embroidery
+                  files.
                 </li>
                 <li>
-                  This is an experimental tool. We make no guarantees about how the file will stitch out
-                  on your specific machine, fabric, or materials.
+                  This is an experimental tool. We make no guarantees about how
+                  the file will stitch out on your specific machine, fabric, or
+                  materials.
                 </li>
                 <li>
-                  We are not responsible for any damage to embroidery machines, needles, garments, or materials
-                  resulting from using the files generated by this site.
+                  We are not responsible for any damage to embroidery machines,
+                  needles, garments, or materials resulting from using the files
+                  generated by this site.
                 </li>
               </ul>
               <p className="text-xs text-muted-foreground">
-                If you do not agree to these terms, please do not upload images or use the generated embroidery files.
+                If you do not agree to these terms, please do not upload images
+                or use the generated embroidery files.
               </p>
             </div>
 
